@@ -2,21 +2,19 @@ package com.iantorno.fhirtestpaging.api
 
 import com.google.gson.Gson
 import com.iantorno.fhirtestpaging.RestServiceMockUtils
+import com.iantorno.fhirtestpaging.RxImmediateSchedulerRule
 import com.iantorno.fhirtestpaging.objects.PatientResponse
+import io.reactivex.android.schedulers.AndroidSchedulers
+import io.reactivex.schedulers.Schedulers
 import junit.framework.TestCase
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
-import org.junit.After
-import org.junit.Assert
-import org.junit.Assert.*
-import org.junit.Before
-import org.junit.Test
-import retrofit2.Call
-import retrofit2.Callback
+import org.junit.*
 import retrofit2.Retrofit
+import retrofit2.adapter.rxjava2.RxJava2CallAdapterFactory
 import retrofit2.converter.gson.GsonConverterFactory
 import java.lang.Exception
 import java.net.HttpURLConnection
@@ -25,6 +23,11 @@ import java.util.concurrent.TimeUnit
 
 class PatientApiTest {
 
+    companion object {
+        @ClassRule
+        @JvmField
+        val schedulers: RxImmediateSchedulerRule = RxImmediateSchedulerRule()
+    }
 
     private var patientResponseJson: String? = null
     private var patientResponse: PatientResponse? = null
@@ -34,7 +37,7 @@ class PatientApiTest {
     private var retrofit: Retrofit? = null
     private var patientApi: PatientApi? = null
 
-    private val count: Int = 20
+    private val count: Int = 10
 
     @Before
     fun setUp() {
@@ -65,7 +68,7 @@ class PatientApiTest {
         }
 
         server!!.setDispatcher(dispatcher)
-        val baseUrl = server!!.url("")//"https://www.reddit.com")
+        val baseUrl = server!!.url("")//" http://hapi.fhir.org/baseDstu3")
 
         okHttpClient = OkHttpClient.Builder()
                 .readTimeout(RestServiceMockUtils.CONNECTION_TIMEOUT_SHORT, TimeUnit.SECONDS)
@@ -74,6 +77,7 @@ class PatientApiTest {
 
         retrofit = Retrofit.Builder()
                 .baseUrl(baseUrl.toString())
+                .addCallAdapterFactory(RxJava2CallAdapterFactory.create())
                 .addConverterFactory(GsonConverterFactory.create())
                 .client(okHttpClient!!)
                 .build()
@@ -92,23 +96,16 @@ class PatientApiTest {
     fun fetchPatientTest() {
         val latch = CountDownLatch(1)
 
-        val call = patientApi!!.getPatients(count)
-        call.enqueue(object : Callback<PatientResponse> {
-            override fun onResponse(call: Call<PatientResponse>, response: retrofit2.Response<PatientResponse>) {
-                if (response.isSuccessful) {
-                    val body = response.body()
-                    Assert.assertNotNull(body)
-                    System.out.println(body!!.toString())
+        patientApi!!.getPatients(10)
+                .subscribeOn(AndroidSchedulers.mainThread())
+                .observeOn(Schedulers.io())
+                .subscribe({ t: PatientResponse? ->
+                    Assert.assertNotNull(t)
+                    System.out.println(t!!.toString())
                     latch.countDown()
-                } else {
-                    TestCase.fail("fetchPatients !isSuccessful : " + response.message())
-                }
-            }
-
-            override fun onFailure(call: Call<PatientResponse>, t: Throwable) {
-                TestCase.fail("fetchPatients onFailure : " + t.message)
-            }
-        })
+                }, { t ->
+                    TestCase.fail("fetchPatients onFailure : " + t.message)
+                })
 
         Assert.assertTrue(latch.await(RestServiceMockUtils.CONNECTION_TIMEOUT_MED, TimeUnit.SECONDS))
     }

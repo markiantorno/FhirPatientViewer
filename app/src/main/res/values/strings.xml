@@ -89,5 +89,16 @@
         "For example, position the FAB to one side of stream of a cards so the FAB won’t interfere "
         "when a user tries to pick up one of cards.\n\n"
     </string>
+
     <string name="action_settings">Settings</string>
+
+    <string name="heading_patient">Patient:</string>
+    <string name="heading_id">ID:</string>
+    <string name="heading_active">Active:</string>
+    <string name="heading_gender">Gender:</string>
+    <string name="heading_birthday">Birthday:</string>
+    <string name="heading_deceased">Deceased:</string>
+
+    <string name="retry">Retry</string>
+
 </resources>

@@ -2,23 +2,22 @@ package com.iantorno.fhirtestpaging.repository.paging
 
 import android.arch.lifecycle.MutableLiveData
 import android.arch.paging.PageKeyedDataSource
-import com.android.example.paging.pagingwithnetwork.reddit.repository.NetworkState
+import com.iantorno.fhirtestpaging.repository.NetworkState
 import com.iantorno.fhirtestpaging.api.PatientApi
-import com.iantorno.fhirtestpaging.objects.LinkType.*
-import com.iantorno.fhirtestpaging.objects.PatientResponse
+import com.iantorno.fhirtestpaging.objects.LinkType.NEXT
+import com.iantorno.fhirtestpaging.objects.LinkType.PREVIOUS
 import com.iantorno.fhirtestpaging.objects.Resource
-import retrofit2.Call
-import retrofit2.Response
-import java.io.IOException
-import java.util.concurrent.Executor
+import io.reactivex.Completable
+import io.reactivex.android.schedulers.AndroidSchedulers
+import io.reactivex.disposables.CompositeDisposable
+import io.reactivex.functions.Action
+import io.reactivex.schedulers.Schedulers
+import timber.log.Timber
 
 class PageKeyedPatientSource(
         private val patientApi: PatientApi,
-        private val retryExecutor: Executor) : PageKeyedDataSource<String, Resource>() {
-
-
-    // keep a function reference for the retry event
-    private var retry: (() -> Any)? = null
+        private val compositeDisposable: CompositeDisposable)
+    : PageKeyedDataSource<String, Resource>() {
 
     /**
      * There is no sync on the state because paging will always call loadInitial first then wait
@@ -27,13 +26,17 @@ class PageKeyedPatientSource(
     val networkState = MutableLiveData<NetworkState>()
     val initialLoad = MutableLiveData<NetworkState>()
 
-    fun retryAllFailed() {
-        val prevRetry = retry
-        retry = null
-        prevRetry?.let {
-            retryExecutor.execute {
-                it.invoke()
-            }
+    /**
+     * Keep Completable reference for the retry event
+     */
+    private var retryCompletable: Completable? = null
+
+    fun retry() {
+        if (retryCompletable != null) {
+            compositeDisposable.add(retryCompletable!!
+                    .subscribeOn(Schedulers.io())
+                    .observeOn(AndroidSchedulers.mainThread())
+                    .subscribe({ }, { throwable -> Timber.e(throwable.message) }))
         }
     }
 
@@ -42,63 +45,50 @@ class PageKeyedPatientSource(
     }
 
     override fun loadInitial(params: LoadInitialParams<String>, callback: LoadInitialCallback<String, Resource>) {
-        val request = patientApi.getPatients(
-                count = params.requestedLoadSize
-        )
         networkState.postValue(NetworkState.LOADING)
         initialLoad.postValue(NetworkState.LOADING)
 
-        // triggered by a refresh, we better execute sync
-        try {
-            val response = request.execute()
-            val data = response.body()
-            val items = data?.entry?.map { it.resource } ?: emptyList()
-
-            retry = null
+        compositeDisposable.add(patientApi.getPatients(count = params.requestedLoadSize).subscribe({ response ->
+            setRetry(null)
+            val items = response?.entry?.map { it.resource } ?: emptyList()
             networkState.postValue(NetworkState.LOADED)
             initialLoad.postValue(NetworkState.LOADED)
             callback.onResult(items,
-                    data?.link?.first { return@first it.relation == PREVIOUS.label }?.url,
-                    data?.link?.first { return@first it.relation == NEXT.label }?.url)
-        } catch (ioException: IOException) {
-            retry = {
+                    response?.link?.find { it.relation == PREVIOUS.label }?.url ?: "",
+                    response?.link?.find { it.relation == NEXT.label }?.url ?: "")
+        }, { throwable ->
+            setRetry(Action {
                 loadInitial(params, callback)
-            }
-            val error = NetworkState.error(ioException.message ?: "unknown error")
+            })
+            val error = NetworkState.error(throwable.message ?: "unknown error")
             networkState.postValue(error)
             initialLoad.postValue(error)
-        }
+        }))
     }
 
     override fun loadAfter(params: LoadParams<String>, callback: LoadCallback<String, Resource>) {
         networkState.postValue(NetworkState.LOADING)
-        patientApi.getPatientsRelational(url = params.key).enqueue(
-                object : retrofit2.Callback<PatientResponse> {
-                    override fun onFailure(call: Call<PatientResponse>, t: Throwable) {
-                        retry = {
-                            loadAfter(params, callback)
-                        }
-                        networkState.postValue(NetworkState.error(t.message ?: "unknown err"))
-                    }
 
-                    override fun onResponse(
-                            call: Call<PatientResponse>,
-                            response: Response<PatientResponse>) {
-                        if (response.isSuccessful) {
-                            val data = response.body()
-                            val items = data?.entry?.map { it.resource } ?: emptyList()
-                            retry = null
-                            callback.onResult(items,
-                                    data?.link?.first { return@first it.relation == NEXT.label }?.url)
-                            networkState.postValue(NetworkState.LOADED)
-                        } else {
-                            retry = {
-                                loadAfter(params, callback)
-                            }
-                            networkState.postValue(
-                                    NetworkState.error("error code: ${response.code()}"))
-                        }
-                    }
-                }
-        )    }
+        compositeDisposable.add(patientApi.getPatientsRelational(url = params.key).subscribe({ response ->
+            setRetry(null)
+            val items = response?.entry?.map { it.resource } ?: emptyList()
+            networkState.postValue(NetworkState.LOADED)
+            callback.onResult(items,
+                    response?.link?.find { it.relation == NEXT.label }?.url)
+        }, { throwable ->
+            setRetry(Action {
+                loadAfter(params, callback)
+            })
+            val error = NetworkState.error(throwable.message ?: "unknown error")
+            networkState.postValue(error)
+        }))
+    }
+
+    private fun setRetry(action: Action?) {
+        if (action == null) {
+            this.retryCompletable = null
+        } else {
+            this.retryCompletable = Completable.fromAction(action)
+        }
+    }
 }
